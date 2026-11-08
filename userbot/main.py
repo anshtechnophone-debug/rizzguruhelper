@@ -3,11 +3,10 @@ import time
 
 from telethon import TelegramClient, events, utils
 
-from .config import API_ID, API_HASH, SESSION, SCAN_INTERVAL, DEFAULT_DM_COOLDOWN
+from .config import API_ID, API_HASH, SESSION, SCAN_INTERVAL, DEFAULT_DM_COOLDOWN, OWNER_ID
 from .database import db, get_setting, set_setting, setup_database
 
 client = TelegramClient(SESSION, API_ID, API_HASH)
-OWNER_ID = None
 LAST_GROUP_SEND = 0.0
 GROUP_SEND_INTERVAL = 30
 
@@ -41,10 +40,10 @@ async def scan_loop():
         await asyncio.sleep(15)
 
 
-@client.on(events.NewMessage(outgoing=True, pattern=r"^\.(help|groups|replyon|replyoff|replyset|dmview|cooldown|status|groupset|groupview|groupsend|groupclear)(?:\s+([\s\S]*))?$"))
+@client.on(events.NewMessage(incoming=True, pattern=r"^\.(help|groups|replyon|replyoff|replyset|dmview|cooldown|status|groupset|groupview|groupsend|groupclear)(?:\s+([\s\S]*))?$"))
 async def owner_commands(event):
-    # Commands are accepted only from the account's own Saved Messages.
-    if not event.is_private or event.chat_id != OWNER_ID:
+    # Accept commands only in a private chat from the configured owner account.
+    if not event.is_private or event.sender_id != OWNER_ID:
         return
 
     global LAST_GROUP_SEND
@@ -180,7 +179,7 @@ async def owner_commands(event):
 async def private_dm_autoreply(event):
     try:
         sender = await event.get_sender()
-        if not sender or getattr(sender, "bot", False) or get_setting("dm_enabled", "1") != "1":
+        if not sender or sender.id == OWNER_ID or getattr(sender, "bot", False) or get_setting("dm_enabled", "1") != "1":
             return
         now = time.time()
         cooldown = max(3600, int(get_setting("dm_cooldown", str(DEFAULT_DM_COOLDOWN))))
@@ -202,14 +201,16 @@ async def private_dm_autoreply(event):
 
 
 async def main():
-    global OWNER_ID
     setup_database()
     await client.start()
     me = await client.get_me()
-    OWNER_ID = me.id
-    print(f"[STARTED] Logged in as {me.username or me.id}")
-    print("Send .help in Saved Messages.")
-    print(f"[STARTUP] Found {await scan_groups()} groups.")
+    print(f"[STARTED] Logged in as {me.username or me.id}; owner ID: {OWNER_ID}")
+    group_count = await scan_groups()
+    print(f"[STARTUP] Found {group_count} groups.")
+    try:
+        await client.send_message(OWNER_ID, f"Userbot is online. Logged in as {me.username or me.id}.\\nGroups scanned: {group_count}\\nSend .help here to control it.")
+    except Exception as exc:
+        print(f"[OWNER NOTIFICATION ERROR] {type(exc).__name__}: {exc}")
     asyncio.create_task(scan_loop())
     await client.run_until_disconnected()
 
