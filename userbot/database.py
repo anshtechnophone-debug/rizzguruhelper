@@ -13,6 +13,9 @@ def setup_database():
         );
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS dm_replies (user_id INTEGER PRIMARY KEY, last_reply REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS group_messages (
+            group_id INTEGER PRIMARY KEY, message TEXT NOT NULL, updated_at REAL NOT NULL
+        );
     """)
     defaults = {
         "dm_enabled": "1",
