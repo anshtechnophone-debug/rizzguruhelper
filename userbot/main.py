@@ -41,7 +41,7 @@ async def scan_loop():
         await asyncio.sleep(15)
 
 
-@client.on(events.NewMessage(outgoing=True, pattern=r"^\\.(help|groups|replyon|replyoff|replyset|dmview|cooldown|status|groupset|groupview|groupsend|groupclear)(?:\\s+([\\s\\S]*))?$"))
+@client.on(events.NewMessage(outgoing=True, pattern=r"^\.(help|groups|replyon|replyoff|replyset|dmview|cooldown|status|groupset|groupview|groupsend|groupclear)(?:\s+([\s\S]*))?$"))
 async def owner_commands(event):
     # Commands are accepted only from the account's own Saved Messages.
     if not event.is_private or event.chat_id != OWNER_ID:
@@ -53,16 +53,16 @@ async def owner_commands(event):
 
     if command == "help":
         await event.respond(
-            "Personal userbot controls (Saved Messages)\\n"
-            ".groups — list groups your account already joined\\n"
-            ".replyon / .replyoff — toggle DM auto-reply\\n"
-            ".replyset <text> — change the automatic DM reply\\n"
-            ".dmview — preview the current DM reply\\n"
-            ".cooldown <hours> — set DM reply cooldown (1–720)\\n"
-            ".status — show current settings\\n"
-            ".groupset <group_id> <text> — save a message for one group\\n"
-            ".groupview — view saved group messages\\n"
-            ".groupsend <group_id> — send that saved message to one group\\n"
+            "Personal userbot controls (Saved Messages)\n"
+            ".groups — list groups your account already joined\n"
+            ".replyon / .replyoff — toggle DM auto-reply\n"
+            ".replyset <text> — change the automatic DM reply\n"
+            ".dmview — preview the current DM reply\n"
+            ".cooldown <hours> — set DM reply cooldown (1–720)\n"
+            ".status — show current settings\n"
+            ".groupset <group_id> <text> — save a message for one group\n"
+            ".groupview — view saved group messages\n"
+            ".groupsend <group_id> — send that saved message to one group\n"
             ".groupclear <group_id> — delete that group's saved message"
         )
     elif command == "groups":
@@ -73,7 +73,7 @@ async def owner_commands(event):
             await event.respond("No groups found yet. The scanner may still be running.")
         else:
             lines = [f"• {r['title']} — ID: {r['group_id']}" for r in rows]
-            await event.respond("Groups found (up to 100):\\n" + "\\n".join(lines))
+            await event.respond("Groups found (up to 100):\n" + "\n".join(lines))
     elif command == "replyon":
         set_setting("dm_enabled", "1")
         await event.respond("DM auto-reply enabled.")
@@ -87,7 +87,7 @@ async def owner_commands(event):
         set_setting("dm_reply", argument)
         await event.respond("DM reply updated.")
     elif command == "dmview":
-        await event.respond("Current DM reply:\\n\\n" + (get_setting("dm_reply") or "(empty)"))
+        await event.respond("Current DM reply:\n\n" + (get_setting("dm_reply") or "(empty)"))
     elif command == "cooldown":
         try:
             hours = float(argument)
@@ -102,9 +102,9 @@ async def owner_commands(event):
         cooldown = int(get_setting("dm_cooldown", str(DEFAULT_DM_COOLDOWN))) / 3600
         saved = db.execute("SELECT COUNT(*) AS n FROM group_messages").fetchone()["n"]
         await event.respond(
-            f"Settings\\nDM auto-reply: {enabled}\\n"
-            f"DM cooldown: {cooldown:g} hours\\n"
-            f"Groups scanned: {db.execute('SELECT COUNT(*) FROM groups_list').fetchone()[0]}\\n"
+            f"Settings\nDM auto-reply: {enabled}\n"
+            f"DM cooldown: {cooldown:g} hours\n"
+            f"Groups scanned: {db.execute('SELECT COUNT(*) FROM groups_list').fetchone()[0]}\n"
             f"Group messages saved: {saved}"
         )
     elif command == "groupset":
@@ -137,8 +137,8 @@ async def owner_commands(event):
         if not rows:
             await event.respond("No group messages saved. Use .groupset <group_id> <message>.")
         else:
-            parts = [f"{r['title']} (ID: {r['group_id']})\\n{r['message']}" for r in rows]
-            await event.respond("Saved group messages:\\n\\n" + "\\n\\n".join(parts))
+            parts = [f"{r['title']} (ID: {r['group_id']})\n{r['message']}" for r in rows]
+            await event.respond("Saved group messages:\n\n" + "\n\n".join(parts))
     elif command == "groupclear":
         try:
             group_id = int(argument)
