@@ -52,7 +52,7 @@ async def owner_commands(event):
 
     if command == "help":
         await event.respond(
-            "Personal userbot controls (Saved Messages)\n"
+            "Personal userbot controls (owner private chat)\n"
             ".groups — list groups your account already joined\n"
             ".replyon / .replyoff — toggle DM auto-reply\n"
             ".replyset <text> — change the automatic DM reply\n"
@@ -208,7 +208,7 @@ async def main():
     group_count = await scan_groups()
     print(f"[STARTUP] Found {group_count} groups.")
     try:
-        await client.send_message(OWNER_ID, f"Userbot is online. Logged in as {me.username or me.id}.\\nGroups scanned: {group_count}\\nSend .help here to control it.")
+        await client.send_message(OWNER_ID, f"Userbot is online. Logged in as {me.username or me.id}.\nGroups scanned: {group_count}\nSend .help here to control it.")
     except Exception as exc:
         print(f"[OWNER NOTIFICATION ERROR] {type(exc).__name__}: {exc}")
     asyncio.create_task(scan_loop())
