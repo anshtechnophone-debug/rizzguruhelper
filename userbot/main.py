@@ -2,6 +2,7 @@ import asyncio
 import time
 
 from telethon import TelegramClient, events, utils
+from telethon.errors import FloodWaitError
 
 from .config import API_ID, API_HASH, SESSION, SCAN_INTERVAL, DEFAULT_DM_COOLDOWN, OWNER_ID
 from .database import db, get_setting, set_setting, setup_database
@@ -9,6 +10,7 @@ from .database import db, get_setting, set_setting, setup_database
 client = TelegramClient(SESSION, API_ID, API_HASH)
 LAST_GROUP_SEND = 0.0
 GROUP_SEND_INTERVAL = 30
+BROADCAST_LOCK = asyncio.Lock()
 
 
 async def scan_groups():
@@ -40,7 +42,7 @@ async def scan_loop():
         await asyncio.sleep(15)
 
 
-@client.on(events.NewMessage(incoming=True, pattern=r"^\.(help|groups|replyon|replyoff|replyset|dmview|cooldown|status|groupset|groupview|groupsend|groupclear)(?:\s+([\s\S]*))?$"))
+@client.on(events.NewMessage(incoming=True, pattern=r"^\.(help|groups|replyon|replyoff|replyset|dmview|cooldown|status|groupset|groupview|groupsend|groupclear|start)(?:\s+([\s\S]*))?$"))
 async def owner_commands(event):
     # Accept commands only in a private chat from the configured owner account.
     if not event.is_private or event.sender_id != OWNER_ID:
@@ -62,7 +64,8 @@ async def owner_commands(event):
             ".groupset <group_id> <text> — save a message for one group\n"
             ".groupview — view saved group messages\n"
             ".groupsend <group_id> — send that saved message to one group\n"
-            ".groupclear <group_id> — delete that group's saved message"
+            ".groupclear <group_id> — delete that group's saved message\n"
+            ".start <seconds> <message> — send an announcement to saved groups"
         )
     elif command == "groups":
         rows = db.execute(
@@ -146,6 +149,51 @@ async def owner_commands(event):
             await event.respond("Saved group message deleted." if cursor.rowcount else "No saved message for that group.")
         except ValueError:
             await event.respond("Usage: .groupclear <group_id>")
+    elif command == "start":
+        try:
+            interval_text, message = argument.split(maxsplit=1)
+            interval = float(interval_text)
+            if interval < 3 or interval > 3600 or not message or len(message) > 4000:
+                raise ValueError
+        except ValueError:
+            await event.respond("Usage: .start <seconds> <message> (3–3600 seconds; message up to 4000 characters).")
+            return
+
+        if BROADCAST_LOCK.locked():
+            await event.respond("A group announcement is already running.")
+            return
+
+        rows = db.execute("SELECT group_id, title FROM groups_list ORDER BY title COLLATE NOCASE").fetchall()
+        if not rows:
+            await event.respond("No saved groups found. Run .groups or wait for the group scanner.")
+            return
+
+        async with BROADCAST_LOCK:
+            await event.respond(f"Starting announcement to {len(rows)} saved groups. Delay: {interval:g} seconds. Groups where Telegram blocks posting will be skipped.")
+            sent = 0
+            failed = []
+            for index, row in enumerate(rows):
+                group_id = row["group_id"]
+                title = row["title"] or str(group_id)
+                try:
+                    entity = await client.get_entity(group_id)
+                    try:
+                        await client.send_message(entity, message, link_preview=False)
+                    except FloodWaitError as exc:
+                        await asyncio.sleep(exc.seconds)
+                        await client.send_message(entity, message, link_preview=False)
+                    sent += 1
+                except Exception as exc:
+                    failed.append(f"{title} ({group_id}): {type(exc).__name__}")
+                if index < len(rows) - 1:
+                    await asyncio.sleep(interval)
+
+            summary = f"Announcement finished.\nSuccessful: {sent}\nSkipped/failed: {len(failed)}\nTotal saved groups: {len(rows)}"
+            if failed:
+                summary += "\n\nCould not send to:\n" + "\n".join(f"• {item}" for item in failed[:30])
+                if len(failed) > 30:
+                    summary += f"\n…and {len(failed) - 30} more."
+            await event.respond(summary)
     elif command == "groupsend":
         try:
             group_id = int(argument)
