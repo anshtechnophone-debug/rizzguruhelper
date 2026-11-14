@@ -42,7 +42,7 @@ async def scan_loop():
         await asyncio.sleep(15)
 
 
-@client.on(events.NewMessage(incoming=True, pattern=r"^\.(help|groups|replyon|replyoff|replyset|dmview|cooldown|status|groupset|groupview|groupsend|groupclear|start)(?:\s+([\s\S]*))?$"))
+@client.on(events.NewMessage(incoming=True, pattern=r"^\.(help|groups|replyon|replyoff|replyset|dmview|cooldown|status|groupset|groupview|groupsend|groupclear|start|dmstart)(?:\s+([\s\S]*))?$"))
 async def owner_commands(event):
     # Accept commands only in a private chat from the configured owner account.
     if not event.is_private or event.sender_id != OWNER_ID:
@@ -65,7 +65,8 @@ async def owner_commands(event):
             ".groupview — view saved group messages\n"
             ".groupsend <group_id> — send that saved message to one group\n"
             ".groupclear <group_id> — delete that group's saved message\n"
-            ".start <seconds> <message> — send an announcement to saved groups"
+            ".start <seconds> <message> — send an announcement to saved groups\n"
+            ".dmstart <seconds> <message> — message users who have previously messaged you"
         )
     elif command == "groups":
         rows = db.execute(
@@ -193,6 +194,75 @@ async def owner_commands(event):
                 summary += "\n\nCould not send to:\n" + "\n".join(f"• {item}" for item in failed[:30])
                 if len(failed) > 30:
                     summary += f"\n…and {len(failed) - 30} more."
+            await event.respond(summary)
+    elif command == "dmstart":
+        try:
+            interval_text, message = argument.split(maxsplit=1)
+            interval = float(interval_text)
+            if interval < 10 or interval > 3600 or not message or len(message) > 4000:
+                raise ValueError
+        except ValueError:
+            await event.respond("Usage: .dmstart <seconds> <message> (10–3600 seconds; message up to 4000 characters).")
+            return
+
+        if BROADCAST_LOCK.locked():
+            await event.respond("Another broadcast is already running.")
+            return
+
+        me = await client.get_me()
+        recipients = []
+        async for dialog in client.iter_dialogs():
+            entity = dialog.entity
+            if not getattr(entity, "id", None) or entity.id == me.id:
+                continue
+            if entity.__class__.__name__ != "User":
+                continue
+            if getattr(entity, "bot", False) or getattr(entity, "deleted", False):
+                continue
+            try:
+                # Include only people with at least one incoming message in the chat history.
+                incoming = await client.get_messages(entity, limit=1, from_user=entity)
+                if incoming:
+                    recipients.append((entity, getattr(entity, "first_name", None) or str(entity.id)))
+            except Exception as exc:
+                print(f"[DM SCAN] Skipped {entity.id}: {type(exc).__name__}")
+
+        if not recipients:
+            await event.respond("No eligible private chats found with an incoming message from the other person.")
+            return
+
+        async with BROADCAST_LOCK:
+            await event.respond(
+                f"Starting DM announcement for {len(recipients)} people who have previously messaged you. "
+                f"Delay: {interval:g} seconds. Telegram privacy/restriction errors will be skipped."
+            )
+            sent = 0
+            failed = []
+            for index, (entity, display_name) in enumerate(recipients):
+                try:
+                    await client.send_message(entity, message, link_preview=False)
+                    sent += 1
+                except FloodWaitError as exc:
+                    # Respect Telegram's requested wait; do not retry aggressively.
+                    await asyncio.sleep(exc.seconds)
+                    try:
+                        await client.send_message(entity, message, link_preview=False)
+                        sent += 1
+                    except Exception as retry_exc:
+                        failed.append(f"{display_name} ({entity.id}): {type(retry_exc).__name__}")
+                except Exception as exc:
+                    failed.append(f"{display_name} ({entity.id}): {type(exc).__name__}")
+                if index < len(recipients) - 1:
+                    await asyncio.sleep(interval)
+
+            summary = (
+                f"DM announcement finished.\\nSuccessful: {sent}\\n"
+                f"Skipped/failed: {len(failed)}\\nTotal eligible: {len(recipients)}"
+            )
+            if failed:
+                summary += "\\n\\nCould not send to:\\n" + "\\n".join(f"• {item}" for item in failed[:30])
+                if len(failed) > 30:
+                    summary += f"\\n…and {len(failed) - 30} more."
             await event.respond(summary)
     elif command == "groupsend":
         try:
