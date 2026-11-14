@@ -256,13 +256,13 @@ async def owner_commands(event):
                     await asyncio.sleep(interval)
 
             summary = (
-                f"DM announcement finished.\\nSuccessful: {sent}\\n"
-                f"Skipped/failed: {len(failed)}\\nTotal eligible: {len(recipients)}"
+                f"DM announcement finished.\nSuccessful: {sent}\n"
+                f"Skipped/failed: {len(failed)}\nTotal eligible: {len(recipients)}"
             )
             if failed:
-                summary += "\\n\\nCould not send to:\\n" + "\\n".join(f"• {item}" for item in failed[:30])
+                summary += "\n\nCould not send to:\n" + "\n".join(f"• {item}" for item in failed[:30])
                 if len(failed) > 30:
-                    summary += f"\\n…and {len(failed) - 30} more."
+                    summary += f"\n…and {len(failed) - 30} more."
             await event.respond(summary)
     elif command == "groupsend":
         try:
