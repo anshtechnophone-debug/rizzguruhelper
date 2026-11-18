@@ -27,6 +27,7 @@ JOIN_TASK = None
 JOIN_GAP_SECONDS = 300
 PENDING_DM_REPLIES = set()
 DM_REPLY_DELAY_SECONDS = 120
+CLIENT_REPLACED = asyncio.Event()
 
 
 async def run_campaign(chat_id, delay, message, eligible):
@@ -655,6 +656,7 @@ async def start_account_migration(event):
         verified = await replacement.get_me()
         client = replacement
         _attach_handlers(client)
+        CLIENT_REPLACED.set()
         db.execute("DELETE FROM groups_list")
         db.commit()
         refreshed_groups = await scan_groups()
@@ -729,10 +731,28 @@ async def main():
     asyncio.create_task(scan_loop())
     while True:
         active_client = client
-        await active_client.run_until_disconnected()
-        # A successful QR migration replaces the client while this loop is waiting.
-        if client is active_client:
-            break
+        disconnected = asyncio.create_task(active_client.run_until_disconnected())
+        replaced = asyncio.create_task(CLIENT_REPLACED.wait())
+        done, pending = await asyncio.wait(
+            {disconnected, replaced},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+        if replaced in done or client is not active_client:
+            CLIENT_REPLACED.clear()
+            continue
+
+        # An unexpected network disconnect should not terminate the service.
+        try:
+            await asyncio.sleep(3)
+            if client is active_client and not active_client.is_connected():
+                await active_client.connect()
+        except Exception as exc:
+            print(f"[RECONNECT ERROR] {type(exc).__name__}: {exc}")
+            await asyncio.sleep(5)
 
 
 if __name__ == "__main__":
