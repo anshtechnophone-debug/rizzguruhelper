@@ -22,6 +22,8 @@ CAMPAIGN_AWAITING_CONFIRMATION = False
 JOIN_QUEUE = asyncio.Queue()
 JOIN_TASK = None
 JOIN_GAP_SECONDS = 300
+PENDING_DM_REPLIES = set()
+DM_REPLY_DELAY_SECONDS = 120
 
 
 async def run_campaign(chat_id, delay, message, eligible):
@@ -442,11 +444,30 @@ async def owner_group_link_joiner(event):
         )
 
 
+async def delayed_dm_reply(user_id, reply):
+    try:
+        await asyncio.sleep(DM_REPLY_DELAY_SECONDS)
+        await client.send_message(user_id, reply, link_preview=False)
+        now = time.time()
+        db.execute(
+            "INSERT INTO dm_replies(user_id, last_reply) VALUES (?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET last_reply=excluded.last_reply",
+            (user_id, now),
+        )
+        db.commit()
+    except Exception as exc:
+        print(f"[DM AUTO-REPLY ERROR] {type(exc).__name__}: {exc}")
+    finally:
+        PENDING_DM_REPLIES.discard(user_id)
+
+
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def private_dm_autoreply(event):
     try:
         sender = await event.get_sender()
         if not sender or sender.id == OWNER_ID or getattr(sender, "bot", False):
+            return
+        if sender.id in PENDING_DM_REPLIES:
             return
         now = time.time()
         cooldown = max(3600, int(get_setting("dm_cooldown", str(DEFAULT_DM_COOLDOWN))))
@@ -456,15 +477,13 @@ async def private_dm_autoreply(event):
         reply = (get_setting("dm_reply") or "").strip()
         if not reply:
             return
-        await event.respond(reply, link_preview=False)
-        db.execute(
-            "INSERT INTO dm_replies(user_id, last_reply) VALUES (?, ?) "
-            "ON CONFLICT(user_id) DO UPDATE SET last_reply=excluded.last_reply",
-            (sender.id, now),
-        )
-        db.commit()
+
+        PENDING_DM_REPLIES.add(sender.id)
+        asyncio.create_task(delayed_dm_reply(sender.id, reply))
+        print(f"[DM AUTO-REPLY] Scheduled reply to {sender.id} in {DM_REPLY_DELAY_SECONDS}s.")
     except Exception as exc:
         print(f"[DM AUTO-REPLY ERROR] {type(exc).__name__}: {exc}")
+
 
 
 async def main():
