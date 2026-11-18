@@ -146,7 +146,8 @@ HELP = (
     ".stop — stop the active announcement\n"
     ".setreply <message> — set the automatic DM reply\n"
     ".groups — show group status\n"
-    ".getgc — create a file with group names and invite links\n\n"
+    ".getgc — create a file with group names and invite links\n"
+    "Send group invite links here to auto-join (5-minute gap for multiple links).\n\n"
 )
 
 
