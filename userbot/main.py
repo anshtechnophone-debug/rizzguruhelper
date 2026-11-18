@@ -331,12 +331,14 @@ async def owner_commands(event):
             try:
                 entity = await client.get_entity(row["group_id"])
                 permissions = await client.get_permissions(entity, me)
-                if getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False):
+                # Telethon's ChatBannedRights.send_messages is True when sending is banned.
+                # Include members who are allowed to write, not only admins/creators.
+                if not getattr(permissions, "send_messages", True):
                     eligible.append((entity, row["title"] or str(row["group_id"])))
             except Exception:
                 continue
         if not eligible:
-            await event.respond("No groups where your account has admin/creator permissions.")
+            await event.respond("No groups where your account has permission to send messages.")
             return
 
         CAMPAIGN_STOP_REQUESTED = False
