@@ -613,7 +613,7 @@ async def start_account_migration(event):
 
         # This scan deliberately uses the still-active old client.
         links = await _migration_group_links()
-        payload = io.BytesIO(("\\n".join(links) + ("\\n" if links else "")).encode("utf-8"))
+        payload = io.BytesIO(("\n".join(links) + ("\n" if links else "")).encode("utf-8"))
         payload.name = "groups_over_600.txt"
         await client.send_file(
             event.chat_id,
@@ -621,6 +621,14 @@ async def start_account_migration(event):
             caption=f"Old-account group links exported: {len(links)}. The file contains links only.",
         )
         await event.respond("The link file has been delivered. Switching the userbot account now…")
+
+        # Remove the last QR from the old account before disconnecting it.
+        if qr_message:
+            try:
+                await client.delete_messages(event.chat_id, qr_message.id)
+            except Exception:
+                pass
+            qr_message = None
 
         # Close both SQLite session handles before replacing the active session file.
         await client.disconnect()
@@ -658,12 +666,20 @@ async def start_account_migration(event):
         except Exception:
             pass
         # If the active file was moved but the new client failed, restore the old session.
-        if backup_file.exists() and not active_file.exists():
-            backup_file.replace(active_file)
-        await event.respond(
-            f"Account switch failed: {type(exc).__name__}: {exc}. "
-            "The old account session has been preserved."
-        )
+        if backup_file.exists():
+            try:
+                if active_file.exists():
+                    active_file.unlink()
+                backup_file.replace(active_file)
+            except Exception as restore_exc:
+                print(f"[ACCOUNT SWITCH RESTORE ERROR] {type(restore_exc).__name__}: {restore_exc}")
+        try:
+            await event.respond(
+                f"Account switch failed: {type(exc).__name__}: {exc}. "
+                "The old account session has been preserved."
+            )
+        except Exception:
+            pass
         if client is not None and not client.is_connected():
             try:
                 await client.connect()
