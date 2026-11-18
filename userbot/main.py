@@ -11,6 +11,92 @@ from .database import db, get_setting, set_setting, setup_database
 
 client = TelegramClient(SESSION, API_ID, API_HASH)
 BROADCAST_LOCK = asyncio.Lock()
+CAMPAIGN_TASK = None
+CAMPAIGN_DECISION = None
+CAMPAIGN_STOP_REQUESTED = False
+CAMPAIGN_NEXT_ROUND = False
+
+
+async def run_campaign(chat_id, delay, message, eligible):
+    global CAMPAIGN_DECISION, CAMPAIGN_STOP_REQUESTED, CAMPAIGN_NEXT_ROUND
+    sent_total = failed_total = rounds = 0
+    try:
+        while True:
+            rounds += 1
+            sent = failed = 0
+            await client.send_message(
+                chat_id,
+                f"Starting announcement round {rounds} across {len(eligible)} eligible groups."
+            )
+            for index, (entity, title) in enumerate(eligible):
+                if CAMPAIGN_STOP_REQUESTED:
+                    break
+                try:
+                    await client.send_message(entity, message, link_preview=False)
+                    sent += 1
+                except FloodWaitError as exc:
+                    # Respect Telegram's requested wait; do not retry-loop.
+                    await asyncio.sleep(exc.seconds)
+                    if CAMPAIGN_STOP_REQUESTED:
+                        break
+                    try:
+                        await client.send_message(entity, message, link_preview=False)
+                        sent += 1
+                    except Exception:
+                        failed += 1
+                except Exception:
+                    failed += 1
+                if index < len(eligible) - 1 and not CAMPAIGN_STOP_REQUESTED:
+                    await asyncio.sleep(delay)
+
+            sent_total += sent
+            failed_total += failed
+            if CAMPAIGN_STOP_REQUESTED:
+                break
+
+            await client.send_message(
+                chat_id,
+                f"Round {rounds} complete. Sent: {sent}; failed: {failed}. "
+                "Waiting 2 minutes before asking for confirmation."
+            )
+            CAMPAIGN_DECISION = asyncio.Event()
+            CAMPAIGN_NEXT_ROUND = False
+            try:
+                await asyncio.wait_for(CAMPAIGN_DECISION.wait(), timeout=120)
+            except asyncio.TimeoutError:
+                pass
+
+            if CAMPAIGN_STOP_REQUESTED:
+                break
+            if not CAMPAIGN_NEXT_ROUND:
+                await client.send_message(
+                    chat_id,
+                    "Paused: no confirmation received. Send .continue to start another round, "
+                    "or .stop to end the announcement."
+                )
+                CAMPAIGN_DECISION = asyncio.Event()
+                await CAMPAIGN_DECISION.wait()
+                if CAMPAIGN_STOP_REQUESTED:
+                    break
+                if not CAMPAIGN_NEXT_ROUND:
+                    continue
+            CAMPAIGN_DECISION = None
+
+        await client.send_message(
+            chat_id,
+            f"Announcement stopped. Rounds completed: {rounds}; "
+            f"total sent: {sent_total}; total failed: {failed_total}."
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        await client.send_message(
+            chat_id, f"Announcement stopped due to an error: {type(exc).__name__}: {exc}"
+        )
+    finally:
+        CAMPAIGN_DECISION = None
+        CAMPAIGN_STOP_REQUESTED = False
+        CAMPAIGN_NEXT_ROUND = False
 
 
 async def scan_groups():
@@ -44,7 +130,9 @@ async def scan_loop():
 HELP = (
     "RizzGuru Helper controls (owner DM)\n\n"
     ".help — show this help\n"
-    ".start 3 <message> — post to groups where your account is an admin\n"
+    ".start 3 <message> — send one announcement round\n"
+    ".continue — confirm the next round (after the 2-minute wait)\n"
+    ".stop — stop the active announcement\n"
     ".setreply <message> — set the automatic DM reply\n"
     ".groups — show group status\n"
     ".getgc — create a file with group names and invite links\n\n"
@@ -168,22 +256,49 @@ async def owner_commands(event):
         await client.send_file(event.chat_id, payload, caption="Group names, IDs, invite links and status")
         return
 
+    global CAMPAIGN_TASK, CAMPAIGN_DECISION, CAMPAIGN_STOP_REQUESTED, CAMPAIGN_NEXT_ROUND
+
+    if command == "stop":
+        if not CAMPAIGN_TASK or CAMPAIGN_TASK.done():
+            await event.respond("No announcement is currently running.")
+            return
+        CAMPAIGN_STOP_REQUESTED = True
+        if CAMPAIGN_DECISION:
+            CAMPAIGN_DECISION.set()
+        await event.respond("Stop requested. The announcement will stop after any current Telegram wait finishes.")
+        return
+
+    if command == "continue":
+        if not CAMPAIGN_TASK or CAMPAIGN_TASK.done():
+            await event.respond("There is no paused announcement to continue.")
+            return
+        if CAMPAIGN_STOP_REQUESTED:
+            await event.respond("The announcement is already stopping.")
+            return
+        if not CAMPAIGN_DECISION:
+            await event.respond("The announcement is still sending or the 2-minute wait has not finished.")
+            return
+        CAMPAIGN_NEXT_ROUND = True
+        CAMPAIGN_DECISION.set()
+        await event.respond("Confirmed. The next announcement round will start.")
+        return
+
     if command == "start":
         parsed = parse_campaign(argument)
         if not parsed:
             await event.respond(f"Usage: .{command} <seconds> <message> (3–3600 seconds; message up to 4000 characters).")
             return
-        delay, message = parsed
-        if BROADCAST_LOCK.locked():
-            await event.respond("An announcement is already running.")
+        if CAMPAIGN_TASK and not CAMPAIGN_TASK.done():
+            await event.respond("An announcement is already running. Use .stop to end it.")
             return
 
+        delay, message = parsed
         rows = db.execute("SELECT group_id, title FROM groups_list ORDER BY title COLLATE NOCASE").fetchall()
         eligible = []
+        me = await client.get_me()
         for row in rows:
             try:
                 entity = await client.get_entity(row["group_id"])
-                me = await client.get_me()
                 permissions = await client.get_permissions(entity, me)
                 if getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False):
                     eligible.append((entity, row["title"] or str(row["group_id"])))
@@ -192,25 +307,18 @@ async def owner_commands(event):
         if not eligible:
             await event.respond("No groups where your account has admin/creator permissions.")
             return
-        async with BROADCAST_LOCK:
-            await event.respond(f"Starting group announcement in {len(eligible)} admin groups, with {delay:g}s delay.")
-            sent, failed = 0, 0
-            for i, (entity, title) in enumerate(eligible):
-                try:
-                    await client.send_message(entity, message, link_preview=False)
-                    sent += 1
-                except FloodWaitError as exc:
-                    await asyncio.sleep(exc.seconds)
-                    try:
-                        await client.send_message(entity, message, link_preview=False)
-                        sent += 1
-                    except Exception:
-                        failed += 1
-                except Exception:
-                    failed += 1
-                if i < len(eligible) - 1:
-                    await asyncio.sleep(delay)
-            await event.respond(f"Group announcement complete. Sent: {sent}; failed: {failed}; total: {len(eligible)}.")
+
+        CAMPAIGN_STOP_REQUESTED = False
+        CAMPAIGN_NEXT_ROUND = False
+        CAMPAIGN_DECISION = None
+        CAMPAIGN_TASK = asyncio.create_task(
+            run_campaign(event.chat_id, delay, message, eligible)
+        )
+        await event.respond(
+            f"Announcement started for {len(eligible)} eligible groups, with {delay:g}s "
+            "between groups. Each round is sent once. After a round, it waits 2 minutes; "
+            "then use .continue to confirm another round or .stop to end it."
+        )
         return
 
 
