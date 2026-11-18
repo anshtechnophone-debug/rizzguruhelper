@@ -45,12 +45,9 @@ HELP = (
     "RizzGuru Helper controls (owner DM)\n\n"
     ".help — show this help\n"
     ".start 3 <message> — post to groups where your account is an admin\n"
-    ".startdm 3 <message> — send only to DM subscribers who opted in\n"
     ".setreply <message> — set the automatic DM reply\n"
     ".groups — show group status\n"
     ".getgc — create a file with group names and invite links\n\n"
-    "To opt in to DM announcements, message this account: SUBSCRIBE. "
-    "Send STOP to opt out."
 )
 
 
@@ -126,7 +123,7 @@ async def owner_commands(event):
         await client.send_file(event.chat_id, payload, caption="Group names, IDs, invite links and status")
         return
 
-    if command in ("start", "startdm"):
+    if command == "start":
         parsed = parse_campaign(argument)
         if not parsed:
             await event.respond(f"Usage: .{command} <seconds> <message> (3–3600 seconds; message up to 4000 characters).")
@@ -136,65 +133,43 @@ async def owner_commands(event):
             await event.respond("An announcement is already running.")
             return
 
-        if command == "start":
-            rows = db.execute("SELECT group_id, title FROM groups_list ORDER BY title COLLATE NOCASE").fetchall()
-            eligible = []
-            for row in rows:
-                try:
-                    entity = await client.get_entity(row["group_id"])
-                    me = await client.get_me()
-                    permissions = await client.get_permissions(entity, me)
-                    if getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False):
-                        eligible.append((entity, row["title"] or str(row["group_id"])))
-                except Exception:
-                    continue
-            if not eligible:
-                await event.respond("No groups where your account has admin/creator permissions.")
-                return
-            async with BROADCAST_LOCK:
-                await event.respond(f"Starting group announcement in {len(eligible)} admin groups, with {delay:g}s delay.")
-                sent, failed = 0, 0
-                for i, (entity, title) in enumerate(eligible):
-                    try:
-                        await client.send_message(entity, message, link_preview=False)
-                        sent += 1
-                    except FloodWaitError as exc:
-                        await asyncio.sleep(exc.seconds)
-                        try:
-                            await client.send_message(entity, message, link_preview=False)
-                            sent += 1
-                        except Exception:
-                            failed += 1
-                    except Exception:
-                        failed += 1
-                    if i < len(eligible) - 1:
-                        await asyncio.sleep(delay)
-                await event.respond(f"Group announcement complete. Sent: {sent}; failed: {failed}; total: {len(eligible)}.")
-            return
-
-        recipients = db.execute("SELECT user_id FROM dm_subscribers WHERE active=1 ORDER BY opted_in_at").fetchall()
-        if not recipients:
-            await event.respond("No DM subscribers. People must send SUBSCRIBE to this account first.")
+        rows = db.execute("SELECT group_id, title FROM groups_list ORDER BY title COLLATE NOCASE").fetchall()
+        eligible = []
+        for row in rows:
+            try:
+                entity = await client.get_entity(row["group_id"])
+                me = await client.get_me()
+                permissions = await client.get_permissions(entity, me)
+                if getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False):
+                    eligible.append((entity, row["title"] or str(row["group_id"])))
+            except Exception:
+                continue
+        if not eligible:
+            await event.respond("No groups where your account has admin/creator permissions.")
             return
         async with BROADCAST_LOCK:
-            await event.respond(f"Starting opted-in DM announcement to {len(recipients)} subscribers; delay {delay:g}s.")
+            await event.respond(f"Starting group announcement in {len(eligible)} admin groups, with {delay:g}s delay.")
             sent, failed = 0, 0
-            for i, row in enumerate(recipients):
+            for i, (entity, title) in enumerate(eligible):
                 try:
-                    await client.send_message(row["user_id"], message, link_preview=False)
+                    await client.send_message(entity, message, link_preview=False)
                     sent += 1
                 except FloodWaitError as exc:
                     await asyncio.sleep(exc.seconds)
                     try:
-                        await client.send_message(row["user_id"], message, link_preview=False)
+                        await client.send_message(entity, message, link_preview=False)
                         sent += 1
                     except Exception:
                         failed += 1
                 except Exception:
                     failed += 1
-                if i < len(recipients) - 1:
+                if i < len(eligible) - 1:
                     await asyncio.sleep(delay)
-            await event.respond(f"DM announcement complete. Sent: {sent}; failed: {failed}; subscribers: {len(recipients)}.")
+            await event.respond(f"Group announcement complete. Sent: {sent}; failed: {failed}; total: {len(eligible)}.")
+        return
+
+
+
 
 
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
@@ -202,21 +177,6 @@ async def private_dm_autoreply(event):
     try:
         sender = await event.get_sender()
         if not sender or sender.id == OWNER_ID or getattr(sender, "bot", False):
-            return
-        text = (event.raw_text or "").strip().upper()
-        if text == "SUBSCRIBE":
-            db.execute(
-                "INSERT INTO dm_subscribers(user_id, active, opted_in_at) VALUES (?, 1, ?) "
-                "ON CONFLICT(user_id) DO UPDATE SET active=1, opted_in_at=excluded.opted_in_at",
-                (sender.id, time.time()),
-            )
-            db.commit()
-            await event.respond("You’re subscribed to occasional RizzGuru announcements. Send STOP anytime to unsubscribe.")
-            return
-        if text == "STOP":
-            db.execute("UPDATE dm_subscribers SET active=0 WHERE user_id=?", (sender.id,))
-            db.commit()
-            await event.respond("You have been unsubscribed.")
             return
         now = time.time()
         cooldown = max(3600, int(get_setting("dm_cooldown", str(DEFAULT_DM_COOLDOWN))))
