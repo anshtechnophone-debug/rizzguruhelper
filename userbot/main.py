@@ -8,7 +8,7 @@ import qrcode
 
 from telethon import TelegramClient, events, utils
 from telethon.errors import FloodWaitError, SessionPasswordNeededError
-from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
+from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest, ExportChatInviteRequest
 from telethon.tl.functions.channels import JoinChannelRequest
 import re
 
@@ -28,6 +28,7 @@ JOIN_GAP_SECONDS = 300
 PENDING_DM_REPLIES = set()
 DM_REPLY_DELAY_SECONDS = 120
 CLIENT_REPLACED = asyncio.Event()
+MIGRATION_TASK = None
 
 
 async def run_campaign(chat_id, delay, message, eligible):
@@ -170,13 +171,19 @@ def parse_campaign(argument, minimum=3):
 
 
 async def owner_commands(event):
+    global MIGRATION_TASK
     if not event.is_private or event.sender_id != OWNER_ID:
         return
     command = event.pattern_match.group(1)
     argument = (event.pattern_match.group(2) or "").strip()
 
     if command == "loginqr":
-        await start_account_migration(event)
+        if MIGRATION_TASK and not MIGRATION_TASK.done():
+            await event.respond("An account migration is already running. Please wait for it to finish.")
+            return
+        # Run outside Telethon's event-handler task. disconnect() cancels active
+        # event handlers, so awaiting migration here would interrupt the handoff.
+        MIGRATION_TASK = asyncio.create_task(start_account_migration(event))
         return
 
     if command == "help":
@@ -268,7 +275,8 @@ async def owner_commands(event):
                 if link:
                     link = f"https://t.me/{link}"
                 else:
-                    link = await client.export_chat_invite_link(entity)
+                    invite = await client(ExportChatInviteRequest(peer=entity))
+                    link = invite.link
                 writer.writerow([title, row["group_id"], link, "OK"])
             except Exception as exc:
                 writer.writerow([title, row["group_id"], "", f"Unavailable: {type(exc).__name__}"])
@@ -527,7 +535,8 @@ async def _migration_group_links():
             try:
                 # Telegram only permits exporting private invite links when this
                 # account has sufficient rights in that group.
-                return await client.export_chat_invite_link(entity)
+                invite = await client(ExportChatInviteRequest(peer=entity))
+                return invite.link
             except FloodWaitError as exc:
                 print(f"[MIGRATION] Flood wait {exc.seconds}s while exporting a link; skipping this group.")
                 return None
