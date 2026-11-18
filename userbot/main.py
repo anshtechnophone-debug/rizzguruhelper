@@ -82,22 +82,67 @@ async def owner_commands(event):
         return
 
     if command == "groups":
-        rows = db.execute("SELECT group_id, title FROM groups_list ORDER BY title COLLATE NOCASE").fetchall()
+        # Acknowledge immediately so the owner knows the command was received.
+        progress = await event.respond("Checking your saved groups…")
+        rows = db.execute(
+            "SELECT group_id, title FROM groups_list ORDER BY title COLLATE NOCASE"
+        ).fetchall()
+
         if not rows:
-            await event.respond("No groups found. The scanner may still be running.")
+            await progress.edit("No saved groups found yet. Refreshing the group list…")
+            try:
+                await scan_groups()
+                rows = db.execute(
+                    "SELECT group_id, title FROM groups_list ORDER BY title COLLATE NOCASE"
+                ).fetchall()
+            except Exception as exc:
+                await progress.edit(f"Could not scan groups: {type(exc).__name__}: {exc}")
+                return
+
+        if not rows:
+            await progress.edit("No groups were found in this account.")
             return
-        lines = []
-        for row in rows:
-            status = "saved"
+
+        try:
+            me = await client.get_me()
+        except Exception as exc:
+            await progress.edit(f"Could not identify the logged-in account: {type(exc).__name__}: {exc}")
+            return
+
+        batch = []
+        sent_count = 0
+        total = len(rows)
+        for index, row in enumerate(rows, 1):
+            title = row["title"] or str(row["group_id"])
             try:
                 entity = await client.get_entity(row["group_id"])
-                me = await client.get_me()
                 perms = await client.get_permissions(entity, me)
-                status = "admin" if (getattr(perms, "is_admin", False) or getattr(perms, "is_creator", False)) else "member"
+                status = (
+                    "admin" if (
+                        getattr(perms, "is_admin", False)
+                        or getattr(perms, "is_creator", False)
+                    ) else "member"
+                )
             except Exception as exc:
                 status = f"unavailable ({type(exc).__name__})"
-            lines.append(f"• {row['title']} | {row['group_id']} | {status}")
-        await event.respond("Groups status:\n" + "\n".join(lines[:100]))
+
+            batch.append(f"• {title} | {row['group_id']} | {status}")
+            if len(batch) >= 25 or index == total:
+                header = f"Groups status ({index - len(batch) + 1}–{index} of {total}):\n"
+                try:
+                    await event.respond(header + "\n".join(batch))
+                    sent_count += len(batch)
+                except Exception as exc:
+                    await progress.edit(
+                        f"Checked {index}/{total} groups, but couldn't send the results: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    return
+                batch.clear()
+                if index < total:
+                    await progress.edit(f"Checked {index}/{total} groups…")
+
+        await progress.edit(f"Finished checking {sent_count} groups.")
         return
 
     if command == "getgc":
