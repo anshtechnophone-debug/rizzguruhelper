@@ -1,55 +1,18 @@
-# RizzGuruHelper
+# RizzGuru Helper
 
-A modular Telegram group bot built with Python and python-telegram-bot.
+RizzGuru Helper has a BotFather bot for the existing automated group welcome flow and a Telethon userbot with the following owner-only controls.
 
-## Current features
+## Userbot commands (private chat)
 
-- `/start` and `/help` commands.
-- Detects members joining a group.
-- Creates a personal invite link for each new member.
-- Posts a welcome message with a Telegram share button.
-- `/testwelcome` lets a group administrator test the welcome flow.
-- Stores each member's personal invite link in SQLite.
+- `.help` — command list
+- `.start 3 <message>` — group announcement, only in groups where your account is admin/creator
+- `.startdm 3 <message>` — DM announcement only to subscribers who explicitly opted in
+- `.setreply <message>` — configure automatic DM reply
+- `.groups` — list group names, IDs and account status
+- `.getgc` — CSV export of group names, IDs, invite links and status
 
-## Requirements
-
-- Python 3.10+
-- A Telegram bot token from [@BotFather](https://t.me/BotFather)
-- The bot must be an administrator in each group where it should create invite links. Grant the permission to manage invite links.
+For DM announcements, users opt in by sending `SUBSCRIBE` and opt out by sending `STOP`.
 
 ## Setup
 
-```bash
-git clone https://github.com/anshtechnophone-debug/rizzguruhelper.git
-cd rizzguruhelper
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-nano .env
-python bot.py
-```
-
-Set `BOT_TOKEN` in `.env`. Never commit your real token or session credentials.
-
-## Project structure
-
-```text
-.
-├── bot.py
-├── config.py
-├── database.py
-├── handlers/
-│   ├── __init__.py
-│   ├── admin.py
-│   ├── basic.py
-│   └── welcome.py
-├── utils/
-│   ├── __init__.py
-│   └── errors.py
-├── requirements.txt
-├── .env.example
-└── README.md
-```
-
-Handlers, database access, configuration, and shared utilities are separated so features can be extended without putting the whole bot in one file.
+Install dependencies, configure `.env` with bot token and Telethon credentials, then start the respective service. Keep credentials and session files private.
