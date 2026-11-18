@@ -339,9 +339,9 @@ async def owner_commands(event):
 
 
 TELEGRAM_LINK_RE = re.compile(
-    r"(?i)(?:https?://)?(?:www\\.)?(?:t\\.me|telegram\\.me)/"
-    r"(?:\\+([A-Za-z0-9_-]{8,})|joinchat/([A-Za-z0-9_-]{8,})|"
-    r"([A-Za-z0-9_]{4,})(?:/\\d+)?)"
+    r"(?i)(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/"
+    r"(?:\+([A-Za-z0-9_-]{8,})|joinchat/([A-Za-z0-9_-]{8,})|"
+    r"([A-Za-z0-9_]{4,})(?:/\d+)?)"
 )
 
 
