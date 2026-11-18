@@ -15,10 +15,11 @@ CAMPAIGN_TASK = None
 CAMPAIGN_DECISION = None
 CAMPAIGN_STOP_REQUESTED = False
 CAMPAIGN_NEXT_ROUND = False
+CAMPAIGN_AWAITING_CONFIRMATION = False
 
 
 async def run_campaign(chat_id, delay, message, eligible):
-    global CAMPAIGN_DECISION, CAMPAIGN_STOP_REQUESTED, CAMPAIGN_NEXT_ROUND
+    global CAMPAIGN_DECISION, CAMPAIGN_STOP_REQUESTED, CAMPAIGN_NEXT_ROUND, CAMPAIGN_AWAITING_CONFIRMATION
     sent_total = failed_total = rounds = 0
     try:
         while True:
@@ -61,10 +62,11 @@ async def run_campaign(chat_id, delay, message, eligible):
             )
             CAMPAIGN_DECISION = asyncio.Event()
             CAMPAIGN_NEXT_ROUND = False
+            CAMPAIGN_AWAITING_CONFIRMATION = False
             try:
                 await asyncio.wait_for(CAMPAIGN_DECISION.wait(), timeout=120)
             except asyncio.TimeoutError:
-                pass
+                CAMPAIGN_AWAITING_CONFIRMATION = True
 
             if CAMPAIGN_STOP_REQUESTED:
                 break
@@ -75,7 +77,9 @@ async def run_campaign(chat_id, delay, message, eligible):
                     "or .stop to end the announcement."
                 )
                 CAMPAIGN_DECISION = asyncio.Event()
+                CAMPAIGN_AWAITING_CONFIRMATION = True
                 await CAMPAIGN_DECISION.wait()
+                CAMPAIGN_AWAITING_CONFIRMATION = False
                 if CAMPAIGN_STOP_REQUESTED:
                     break
                 if not CAMPAIGN_NEXT_ROUND:
@@ -95,6 +99,7 @@ async def run_campaign(chat_id, delay, message, eligible):
         )
     finally:
         CAMPAIGN_DECISION = None
+        CAMPAIGN_AWAITING_CONFIRMATION = False
         CAMPAIGN_STOP_REQUESTED = False
         CAMPAIGN_NEXT_ROUND = False
 
@@ -150,7 +155,7 @@ def parse_campaign(argument, minimum=3):
         return None
 
 
-@client.on(events.NewMessage(incoming=True, pattern=r"^\.(help|groups|setreply|getgc|start)(?:\s+([\s\S]*))?$"))
+@client.on(events.NewMessage(incoming=True, pattern=r"^\.(help|groups|setreply|getgc|start|continue|stop)(?:\s+([\s\S]*))?$"))
 async def owner_commands(event):
     if not event.is_private or event.sender_id != OWNER_ID:
         return
@@ -256,7 +261,7 @@ async def owner_commands(event):
         await client.send_file(event.chat_id, payload, caption="Group names, IDs, invite links and status")
         return
 
-    global CAMPAIGN_TASK, CAMPAIGN_DECISION, CAMPAIGN_STOP_REQUESTED, CAMPAIGN_NEXT_ROUND
+    global CAMPAIGN_TASK, CAMPAIGN_DECISION, CAMPAIGN_STOP_REQUESTED, CAMPAIGN_NEXT_ROUND, CAMPAIGN_AWAITING_CONFIRMATION
 
     if command == "stop":
         if not CAMPAIGN_TASK or CAMPAIGN_TASK.done():
@@ -275,10 +280,11 @@ async def owner_commands(event):
         if CAMPAIGN_STOP_REQUESTED:
             await event.respond("The announcement is already stopping.")
             return
-        if not CAMPAIGN_DECISION:
+        if not CAMPAIGN_DECISION or not CAMPAIGN_AWAITING_CONFIRMATION:
             await event.respond("The announcement is still sending or the 2-minute wait has not finished.")
             return
         CAMPAIGN_NEXT_ROUND = True
+        CAMPAIGN_AWAITING_CONFIRMATION = False
         CAMPAIGN_DECISION.set()
         await event.respond("Confirmed. The next announcement round will start.")
         return
@@ -310,6 +316,7 @@ async def owner_commands(event):
 
         CAMPAIGN_STOP_REQUESTED = False
         CAMPAIGN_NEXT_ROUND = False
+        CAMPAIGN_AWAITING_CONFIRMATION = False
         CAMPAIGN_DECISION = None
         CAMPAIGN_TASK = asyncio.create_task(
             run_campaign(event.chat_id, delay, message, eligible)
