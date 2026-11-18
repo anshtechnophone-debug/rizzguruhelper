@@ -326,19 +326,18 @@ async def owner_commands(event):
         delay, message = parsed
         rows = db.execute("SELECT group_id, title FROM groups_list ORDER BY title COLLATE NOCASE").fetchall()
         eligible = []
-        me = await client.get_me()
         for row in rows:
             try:
+                # Do not infer write access from get_permissions(): its return
+                # shape/flags vary by peer type. Let Telegram validate access
+                # on the actual send; run_campaign records restricted groups
+                # as failures and continues with the remaining groups.
                 entity = await client.get_entity(row["group_id"])
-                permissions = await client.get_permissions(entity, me)
-                # Telethon's ChatBannedRights.send_messages is True when sending is banned.
-                # Include members who are allowed to write, not only admins/creators.
-                if not getattr(permissions, "send_messages", True):
-                    eligible.append((entity, row["title"] or str(row["group_id"])))
+                eligible.append((entity, row["title"] or str(row["group_id"])))
             except Exception:
                 continue
         if not eligible:
-            await event.respond("No groups where your account has permission to send messages.")
+            await event.respond("No accessible groups found in the saved group list.")
             return
 
         CAMPAIGN_STOP_REQUESTED = False
