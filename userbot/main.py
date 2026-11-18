@@ -543,7 +543,7 @@ def _attach_handlers(target):
         owner_commands,
         events.NewMessage(
             incoming=True,
-            pattern=r"^\\.(help|loginqr|groups|setreply|getgc|start|continue|stop)(?:\\s+([\\s\\S]*))?$",
+            pattern=r"^\.(help|loginqr|groups|setreply|getgc|start|continue|stop)(?:\s+([\s\S]*))?$",
         ),
     )
     target.add_event_handler(
@@ -564,6 +564,8 @@ async def start_account_migration(event):
 
     pending_name = f"{SESSION}_pending"
     pending_file = _session_file(pending_name)
+    # Never reuse a stale, half-completed QR login from an earlier attempt.
+    pending_file.unlink(missing_ok=True)
     active_file = _session_file(SESSION)
     backup_file = active_file.with_name(active_file.name + f".backup-{int(time.time())}")
     pending = TelegramClient(pending_name, API_ID, API_HASH)
