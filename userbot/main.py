@@ -601,7 +601,7 @@ async def start_account_migration(event):
                         pass
                     if attempt == 5:
                         raise TimeoutError("QR login expired. Send .loginqr to try again.")
-                    qr_login = await qr_login.recreate()
+                    await qr_login.recreate()
             else:
                 raise TimeoutError("QR login timed out.")
         new_me = await pending.get_me()
