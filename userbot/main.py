@@ -2,9 +2,12 @@ import asyncio
 import io
 import time
 import csv
+import os
+from pathlib import Path
+import qrcode
 
 from telethon import TelegramClient, events, utils
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, SessionPasswordNeededError
 from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
 from telethon.tl.functions.channels import JoinChannelRequest
 import re
@@ -143,6 +146,7 @@ async def scan_loop():
 HELP = (
     "RizzGuru Helper controls (owner DM)\n\n"
     ".help — show this help\n"
+    ".loginqr — switch this userbot to another Telegram account by QR\n"
     ".start 3 <message> — send one announcement round\n"
     ".continue — confirm the next round (after the 2-minute wait)\n"
     ".stop — stop the active announcement\n"
@@ -164,12 +168,15 @@ def parse_campaign(argument, minimum=3):
         return None
 
 
-@client.on(events.NewMessage(incoming=True, pattern=r"^\.(help|groups|setreply|getgc|start|continue|stop)(?:\s+([\s\S]*))?$"))
 async def owner_commands(event):
     if not event.is_private or event.sender_id != OWNER_ID:
         return
     command = event.pattern_match.group(1)
     argument = (event.pattern_match.group(2) or "").strip()
+
+    if command == "loginqr":
+        await start_account_migration(event)
+        return
 
     if command == "help":
         await event.respond(HELP)
@@ -418,7 +425,6 @@ async def join_queue_worker():
         JOIN_TASK = None
 
 
-@client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def owner_group_link_joiner(event):
     global JOIN_TASK
     if event.sender_id != OWNER_ID:
@@ -461,7 +467,6 @@ async def delayed_dm_reply(user_id, reply):
         PENDING_DM_REPLIES.discard(user_id)
 
 
-@client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def private_dm_autoreply(event):
     try:
         sender = await event.get_sender()
@@ -486,9 +491,196 @@ async def private_dm_autoreply(event):
 
 
 
+def _session_file(session_name):
+    path = Path(session_name)
+    return path if path.suffix == ".session" else Path(str(path) + ".session")
+
+
+def _qr_image(url):
+    image = qrcode.make(url)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.name = "telegram_login_qr.png"
+    buffer.seek(0)
+    return buffer
+
+
+async def _migration_group_links():
+    """Collect invite links from the CURRENT (old) account's groups over 600 members."""
+    candidates = []
+    async for dialog in client.iter_dialogs():
+        entity = dialog.entity
+        if not (getattr(entity, "megagroup", False) or entity.__class__.__name__ == "Chat"):
+            continue
+        count = getattr(entity, "participants_count", None)
+        if isinstance(count, int) and count > 600:
+            candidates.append(entity)
+
+    semaphore = asyncio.Semaphore(8)
+
+    async def resolve_link(entity):
+        username = getattr(entity, "username", None)
+        if username:
+            return f"https://t.me/{username}"
+        async with semaphore:
+            try:
+                # Telegram only permits exporting private invite links when this
+                # account has sufficient rights in that group.
+                return await client.export_chat_invite_link(entity)
+            except FloodWaitError as exc:
+                print(f"[MIGRATION] Flood wait {exc.seconds}s while exporting a link; skipping this group.")
+                return None
+            except Exception as exc:
+                print(f"[MIGRATION] Could not export link for {getattr(entity, 'title', entity.id)}: {type(exc).__name__}")
+                return None
+
+    resolved = await asyncio.gather(*(resolve_link(entity) for entity in candidates))
+    return list(dict.fromkeys(link for link in resolved if link))
+
+
+def _attach_handlers(target):
+    target.add_event_handler(
+        owner_commands,
+        events.NewMessage(
+            incoming=True,
+            pattern=r"^\\.(help|loginqr|groups|setreply|getgc|start|continue|stop)(?:\\s+([\\s\\S]*))?$",
+        ),
+    )
+    target.add_event_handler(
+        owner_group_link_joiner,
+        events.NewMessage(incoming=True, func=lambda e: e.is_private),
+    )
+    target.add_event_handler(
+        private_dm_autoreply,
+        events.NewMessage(incoming=True, func=lambda e: e.is_private),
+    )
+
+
+async def start_account_migration(event):
+    """QR-login a replacement account, export old-account group links, then swap sessions."""
+    global client
+    if not event.is_private or event.sender_id != OWNER_ID:
+        return
+
+    pending_name = f"{SESSION}_pending"
+    pending_file = _session_file(pending_name)
+    active_file = _session_file(SESSION)
+    backup_file = active_file.with_name(active_file.name + f".backup-{int(time.time())}")
+    pending = TelegramClient(pending_name, API_ID, API_HASH)
+    qr_message = None
+
+    try:
+        await pending.connect()
+        if not await pending.is_user_authorized():
+            qr_login = await pending.qr_login()
+            await event.respond(
+                "Scan the QR with the Telegram account you want to activate. "
+                "Keep this chat open; the current account remains active until the export is sent."
+            )
+            for attempt in range(6):
+                qr_message = await client.send_file(
+                    event.chat_id,
+                    _qr_image(qr_login.url),
+                    caption=f"Telegram login QR — attempt {attempt + 1}/6. Scan this QR in Settings → Devices → Link Desktop Device.",
+                )
+                try:
+                    await asyncio.wait_for(qr_login.wait(), timeout=22)
+                    break
+                except asyncio.TimeoutError:
+                    try:
+                        await client.delete_messages(event.chat_id, qr_message.id)
+                    except Exception:
+                        pass
+                    if attempt == 5:
+                        raise TimeoutError("QR login expired. Send .loginqr to try again.")
+                    qr_login = await qr_login.recreate()
+            else:
+                raise TimeoutError("QR login timed out.")
+        new_me = await pending.get_me()
+        if not new_me:
+            raise RuntimeError("Telegram did not return the new account identity.")
+
+        old_me = await client.get_me()
+        if old_me and old_me.id == new_me.id:
+            await event.respond("That is already the active account. Nothing was changed.")
+            await pending.disconnect()
+            return
+
+        await event.respond(
+            f"New account verified: {new_me.first_name or 'Telegram user'} (ID {new_me.id}). "
+            "Scanning groups from the OLD account now…"
+        )
+
+        # This scan deliberately uses the still-active old client.
+        links = await _migration_group_links()
+        payload = io.BytesIO(("\\n".join(links) + ("\\n" if links else "")).encode("utf-8"))
+        payload.name = "groups_over_600.txt"
+        await client.send_file(
+            event.chat_id,
+            payload,
+            caption=f"Old-account group links exported: {len(links)}. The file contains links only.",
+        )
+        await event.respond("The link file has been delivered. Switching the userbot account now…")
+
+        # Close both SQLite session handles before replacing the active session file.
+        await client.disconnect()
+        await pending.disconnect()
+
+        if active_file.exists():
+            active_file.replace(backup_file)
+        if not pending_file.exists():
+            raise RuntimeError("The new Telegram session file was not created.")
+        pending_file.replace(active_file)
+
+        replacement = TelegramClient(SESSION, API_ID, API_HASH)
+        await replacement.connect()
+        if not await replacement.is_user_authorized():
+            raise RuntimeError("The replacement session did not remain authorised.")
+        client = replacement
+        _attach_handlers(client)
+        verified = await client.get_me()
+        print(f"[ACCOUNT SWITCH] Active account is now {verified.username or verified.id}; owner ID remains {OWNER_ID}.")
+        # Avoid relying on a cross-account cached input peer to message the owner here.
+    except SessionPasswordNeededError:
+        await event.respond(
+            "This account requires its Telegram two-step verification password. "
+            "For safety, QR migration was cancelled; the old account is still active."
+        )
+        try:
+            await pending.disconnect()
+        except Exception:
+            pass
+    except Exception as exc:
+        print(f"[ACCOUNT SWITCH ERROR] {type(exc).__name__}: {exc}")
+        try:
+            if pending.is_connected():
+                await pending.disconnect()
+        except Exception:
+            pass
+        # If the active file was moved but the new client failed, restore the old session.
+        if backup_file.exists() and not active_file.exists():
+            backup_file.replace(active_file)
+        await event.respond(
+            f"Account switch failed: {type(exc).__name__}: {exc}. "
+            "The old account session has been preserved."
+        )
+        if client is not None and not client.is_connected():
+            try:
+                await client.connect()
+            except Exception:
+                pass
+    finally:
+        if qr_message:
+            try:
+                await client.delete_messages(event.chat_id, qr_message.id)
+            except Exception:
+                pass
+
+
 async def main():
     setup_database()
     await client.start()
+    _attach_handlers(client)
     me = await client.get_me()
     print(f"[STARTED] Logged in as {me.username or me.id}; owner ID: {OWNER_ID}")
     count = await scan_groups()
