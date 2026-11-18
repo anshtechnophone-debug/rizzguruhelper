@@ -646,9 +646,9 @@ async def start_account_migration(event):
         await replacement.connect()
         if not await replacement.is_user_authorized():
             raise RuntimeError("The replacement session did not remain authorised.")
+        verified = await replacement.get_me()
         client = replacement
         _attach_handlers(client)
-        verified = await client.get_me()
         print(f"[ACCOUNT SWITCH] Active account is now {verified.username or verified.id}; owner ID remains {OWNER_ID}.")
         # Avoid relying on a cross-account cached input peer to message the owner here.
     except SessionPasswordNeededError:
@@ -675,16 +675,26 @@ async def start_account_migration(event):
                 backup_file.replace(active_file)
             except Exception as restore_exc:
                 print(f"[ACCOUNT SWITCH RESTORE ERROR] {type(restore_exc).__name__}: {restore_exc}")
+        if client is not None and not client.is_connected():
+            try:
+                restored = TelegramClient(SESSION, API_ID, API_HASH)
+                await restored.connect()
+                if restored.is_user_authorized():
+                    client = restored
+                    _attach_handlers(client)
+            except Exception as restore_exc:
+                print(f"[ACCOUNT SWITCH RECONNECT ERROR] {type(restore_exc).__name__}: {restore_exc}")
         try:
             await event.respond(
                 f"Account switch failed: {type(exc).__name__}: {exc}. "
                 "The old account session has been preserved."
             )
         except Exception:
-            pass
-        if client is not None and not client.is_connected():
             try:
-                await client.connect()
+                await client.send_message(
+                    event.chat_id,
+                    f"Account switch failed: {type(exc).__name__}: {exc}. The old session was preserved."
+                )
             except Exception:
                 pass
     finally:
