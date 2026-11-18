@@ -1,33 +1,18 @@
-# Telethon personal-account userbot
+# RizzGuru Helper — Telethon userbot
 
-This is separate from the BotFather welcome bot. It logs in to the Telegram
-account you authorize through Telethon.
+## Owner commands (send privately to the logged-in account)
+
+- `.help` — list commands
+- `.start 3 <message>` — post an announcement to groups where your account is an admin/creator
+- `.startdm 3 <message>` — send only to people who opted in by messaging `SUBSCRIBE`
+- `.setreply <message>` — set the automatic DM reply
+- `.groups` — list group names, IDs and admin/member status
+- `.getgc` — create a CSV of group names, IDs, invite links and link availability
+
+DM subscribers can send `STOP` to opt out. The userbot does not DM non-subscribers.
 
 ## Setup
 
-1. Copy .env.example to .env.
-2. Set TELEGRAM_API_ID and TELEGRAM_API_HASH from https://my.telegram.org.
-3. Install dependencies with pip install -r requirements.txt.
-4. Start with python -m userbot.main and complete the Telegram login prompt.
+Set `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, and `OWNER_ID` in `.env`. Start with `python -m userbot.main`.
 
-## Commands (send from Saved Messages)
-
-- .help — command list
-- .groups — list groups already joined by your account (includes IDs)
-- .replyon / .replyoff — toggle private-message auto-replies
-- .replyset <text> — set the automatic DM reply
-- .dmview — preview the current DM reply
-- .cooldown 24 — set DM cooldown in hours (1–720)
-- .status — show current settings
-- .groupset <group_id> <text> — save or replace a message for one group; this does not send it
-- .groupview — view saved group messages
-- .groupsend <group_id> — explicitly send the saved message to that one group
-- .groupclear <group_id> — remove a group's saved message
-
-Group sending is manual, one selected group at a time, limited to groups where
-your account is an administrator. A 30-second interval is enforced between
-group sends. There is no group-wide broadcast or automatic campaign feature.
-
-The scanner only records groups your account already belongs to. It does not
-join arbitrary links or send unsolicited campaigns. Keep API credentials,
-the session file, and .env private. Never commit them to Git.
+Keep API credentials, session files and `.env` private. Never commit them.
