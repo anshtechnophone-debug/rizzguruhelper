@@ -17,6 +17,15 @@ def setup_database():
         CREATE TABLE IF NOT EXISTS dm_subscribers (
             user_id INTEGER PRIMARY KEY, active INTEGER NOT NULL DEFAULT 1, opted_in_at REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS pending_group_joins (
+            kind TEXT NOT NULL,
+            value TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at REAL NOT NULL,
+            last_error TEXT NOT NULL DEFAULT '',
+            created_at REAL NOT NULL,
+            PRIMARY KEY(kind, value)
+        );
     """)
     defaults = {
         "dm_reply": DEFAULT_DM_REPLY,
