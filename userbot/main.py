@@ -22,9 +22,9 @@ CAMPAIGN_DECISION = None
 CAMPAIGN_STOP_REQUESTED = False
 CAMPAIGN_NEXT_ROUND = False
 CAMPAIGN_AWAITING_CONFIRMATION = False
-JOIN_QUEUE = asyncio.Queue()
 JOIN_TASK = None
-JOIN_GAP_SECONDS = 300
+JOIN_IN_PROGRESS = False
+JOIN_GAP_SECONDS = 60
 PENDING_DM_REPLIES = set()
 DM_REPLY_DELAY_SECONDS = 120
 CLIENT_REPLACED = asyncio.Event()
@@ -406,36 +406,91 @@ async def join_one_group(link):
     return f"Joined: {getattr(entity, 'title', value)}"
 
 
-async def join_queue_worker():
+async def ensure_join_worker():
     global JOIN_TASK
+    pending = db.execute("SELECT 1 FROM pending_group_joins LIMIT 1").fetchone()
+    if pending and (not JOIN_TASK or JOIN_TASK.done()):
+        JOIN_TASK = asyncio.create_task(join_queue_worker())
+
+
+async def join_queue_worker():
+    global JOIN_TASK, JOIN_IN_PROGRESS
     try:
         while True:
-            link = await JOIN_QUEUE.get()
-            try:
-                try:
-                    result = await join_one_group(link)
-                except FloodWaitError as exc:
-                    # Honour Telegram's server-provided cooldown; never bypass it.
-                    await client.send_message(OWNER_ID, f"Join paused by Telegram for {exc.seconds}s.")
-                    await asyncio.sleep(exc.seconds)
-                    try:
-                        result = await join_one_group(link)
-                    except Exception as retry_exc:
-                        result = f"Failed: {type(retry_exc).__name__}: {retry_exc}"
-                except Exception as exc:
-                    result = f"Failed: {type(exc).__name__}: {exc}"
-                await client.send_message(OWNER_ID, f"Auto-join: {result}")
-            finally:
-                JOIN_QUEUE.task_done()
+            row = db.execute(
+                "SELECT kind, value, attempts, next_attempt_at FROM pending_group_joins "
+                "ORDER BY next_attempt_at, created_at LIMIT 1"
+            ).fetchone()
+            if not row:
+                return
 
-            if not JOIN_QUEUE.empty():
-                await asyncio.sleep(JOIN_GAP_SECONDS)
+            wait_for = float(row["next_attempt_at"]) - time.time()
+            if wait_for > 0:
+                await asyncio.sleep(min(wait_for, 30))
+                continue
+
+            link = (row["kind"], row["value"])
+            JOIN_IN_PROGRESS = True
+            try:
+                result = await join_one_group(link)
+                if result.startswith("Joined:"):
+                    db.execute(
+                        "DELETE FROM pending_group_joins WHERE kind=? AND value=?",
+                        link,
+                    )
+                    db.commit()
+                    await client.send_message(OWNER_ID, f"Auto-join: {result}")
+                else:
+                    raise RuntimeError(result)
+            except FloodWaitError as exc:
+                attempts = int(row["attempts"]) + 1
+                retry_in = max(int(exc.seconds), 60)
+                db.execute(
+                    "UPDATE pending_group_joins SET attempts=?, next_attempt_at=?, last_error=? "
+                    "WHERE kind=? AND value=?",
+                    (attempts, time.time() + retry_in, f"FloodWait: {exc.seconds}s", *link),
+                )
+                db.commit()
+                await client.send_message(
+                    OWNER_ID,
+                    f"Join rate-limited by Telegram. Kept link pending; retrying in {retry_in}s."
+                )
+            except Exception as exc:
+                attempts = int(row["attempts"]) + 1
+                # Exponential backoff: 5m, 10m, 20m ... capped at 6h.
+                retry_in = min(300 * (2 ** min(attempts - 1, 6)), 21600)
+                error = f"{type(exc).__name__}: {exc}"[:500]
+                db.execute(
+                    "UPDATE pending_group_joins SET attempts=?, next_attempt_at=?, last_error=? "
+                    "WHERE kind=? AND value=?",
+                    (attempts, time.time() + retry_in, error, *link),
+                )
+                db.commit()
+                await client.send_message(
+                    OWNER_ID,
+                    f"Auto-join failed; link kept pending (attempt {attempts}). "
+                    f"Next retry in {retry_in // 60} min. Reason: {error}"
+                )
+            finally:
+                JOIN_IN_PROGRESS = False
+
+            # Enforce at most one join attempt per minute, including retries.
+            await asyncio.sleep(JOIN_GAP_SECONDS)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        print(f"[JOIN WORKER ERROR] {type(exc).__name__}: {exc}")
     finally:
+        JOIN_IN_PROGRESS = False
         JOIN_TASK = None
+        # Restart if pending rows remain (e.g. after a transient worker error).
+        if db.execute("SELECT 1 FROM pending_group_joins LIMIT 1").fetchone():
+            asyncio.get_running_loop().call_soon(
+                lambda: asyncio.create_task(ensure_join_worker())
+            )
 
 
 async def owner_group_link_joiner(event):
-    global JOIN_TASK
     if event.sender_id != OWNER_ID:
         return
     links = extract_group_links(event.raw_text or "")
@@ -443,20 +498,24 @@ async def owner_group_link_joiner(event):
         return
 
     added = 0
-    for link in links:
-        await JOIN_QUEUE.put(link)
-        added += 1
-
-    if not JOIN_TASK or JOIN_TASK.done():
-        JOIN_TASK = asyncio.create_task(join_queue_worker())
-
-    if added == 1 and JOIN_QUEUE.qsize() == 1:
-        await event.respond("Group link detected. Joining now.")
-    else:
-        await event.respond(
-            f"Detected {added} group link(s). Added to the join queue; "
-            "the first will be processed now and later groups will be spaced 5 minutes apart."
+    for kind, value in links:
+        cursor = db.execute(
+            "INSERT OR IGNORE INTO pending_group_joins "
+            "(kind, value, attempts, next_attempt_at, last_error, created_at) "
+            "VALUES (?, ?, 0, ?, '', ?)",
+            (kind, value, time.time(), time.time()),
         )
+        added += cursor.rowcount
+    db.commit()
+    await ensure_join_worker()
+
+    pending_count = db.execute(
+        "SELECT COUNT(*) AS total FROM pending_group_joins"
+    ).fetchone()["total"]
+    await event.respond(
+        f"Added {added} new link(s). Pending links: {pending_count}. "
+        "The userbot attempts one join per minute. Failed links remain saved and retry with increasing delays."
+    )
 
 
 async def delayed_dm_reply(user_id, reply):
@@ -574,7 +633,7 @@ async def start_account_migration(event):
     if CAMPAIGN_TASK and not CAMPAIGN_TASK.done():
         await event.respond("Stop the active announcement with .stop before switching accounts.")
         return
-    if (JOIN_TASK and not JOIN_TASK.done()) or not JOIN_QUEUE.empty():
+    if JOIN_IN_PROGRESS:
         await event.respond("Wait for the current group-join queue to finish before switching accounts.")
         return
 
@@ -738,6 +797,7 @@ async def main():
     except Exception as exc:
         print(f"[OWNER NOTIFICATION ERROR] {type(exc).__name__}: {exc}")
     asyncio.create_task(scan_loop())
+    await ensure_join_worker()
     while True:
         active_client = client
         disconnected = asyncio.create_task(active_client.run_until_disconnected())
