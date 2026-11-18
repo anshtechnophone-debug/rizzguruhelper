@@ -155,7 +155,7 @@ HELP = (
     ".setreply <message> — set the automatic DM reply\n"
     ".groups — show group status\n"
     ".getgc — create a file with group names and invite links\n"
-    "Send group invite links here to auto-join (5-minute gap for multiple links).\n\n"
+    "Send group invite links here to auto-join (one attempt per minute; failed links stay pending and retry).\n\n"
 )
 
 
