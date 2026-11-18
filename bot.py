@@ -10,7 +10,6 @@ from telegram.ext import (
 
 from config import BOT_TOKEN
 from database import init_db
-from handlers.admin import testwelcome
 from handlers.basic import help_command, start
 from handlers.welcome import on_chat_member
 from utils.errors import error_handler
@@ -34,7 +33,6 @@ def main() -> None:
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("testwelcome", testwelcome))
     app.add_handler(
         ChatMemberHandler(on_chat_member, ChatMemberHandler.CHAT_MEMBER)
     )
