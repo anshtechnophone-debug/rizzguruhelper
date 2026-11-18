@@ -561,6 +561,12 @@ async def start_account_migration(event):
     global client
     if not event.is_private or event.sender_id != OWNER_ID:
         return
+    if CAMPAIGN_TASK and not CAMPAIGN_TASK.done():
+        await event.respond("Stop the active announcement with .stop before switching accounts.")
+        return
+    if (JOIN_TASK and not JOIN_TASK.done()) or not JOIN_QUEUE.empty():
+        await event.respond("Wait for the current group-join queue to finish before switching accounts.")
+        return
 
     pending_name = f"{SESSION}_pending"
     pending_file = _session_file(pending_name)
@@ -679,7 +685,7 @@ async def start_account_migration(event):
             try:
                 restored = TelegramClient(SESSION, API_ID, API_HASH)
                 await restored.connect()
-                if restored.is_user_authorized():
+                if await restored.is_user_authorized():
                     client = restored
                     _attach_handlers(client)
             except Exception as restore_exc:
