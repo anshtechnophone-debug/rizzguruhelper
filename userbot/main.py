@@ -62,7 +62,7 @@ def parse_campaign(argument, minimum=3):
         return None
 
 
-@client.on(events.NewMessage(incoming=True, pattern=r"^\.(help|groups|setreply|getgc|start|startdm)(?:\s+([\s\S]*))?$"))
+@client.on(events.NewMessage(incoming=True, pattern=r"^\.(help|groups|setreply|getgc|start)(?:\s+([\s\S]*))?$"))
 async def owner_commands(event):
     if not event.is_private or event.sender_id != OWNER_ID:
         return
