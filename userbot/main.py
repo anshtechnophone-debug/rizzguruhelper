@@ -655,7 +655,10 @@ async def start_account_migration(event):
         verified = await replacement.get_me()
         client = replacement
         _attach_handlers(client)
-        print(f"[ACCOUNT SWITCH] Active account is now {verified.username or verified.id}; owner ID remains {OWNER_ID}.")
+        db.execute("DELETE FROM groups_list")
+        db.commit()
+        refreshed_groups = await scan_groups()
+        print(f"[ACCOUNT SWITCH] Active account is now {verified.username or verified.id}; owner ID remains {OWNER_ID}. Refreshed {refreshed_groups} groups.")
         # Avoid relying on a cross-account cached input peer to message the owner here.
     except SessionPasswordNeededError:
         await event.respond(
@@ -724,7 +727,12 @@ async def main():
     except Exception as exc:
         print(f"[OWNER NOTIFICATION ERROR] {type(exc).__name__}: {exc}")
     asyncio.create_task(scan_loop())
-    await client.run_until_disconnected()
+    while True:
+        active_client = client
+        await active_client.run_until_disconnected()
+        # A successful QR migration replaces the client while this loop is waiting.
+        if client is active_client:
+            break
 
 
 if __name__ == "__main__":
