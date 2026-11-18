@@ -5,6 +5,9 @@ import csv
 
 from telethon import TelegramClient, events, utils
 from telethon.errors import FloodWaitError
+from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
+from telethon.tl.functions.channels import JoinChannelRequest
+import re
 
 from .config import API_ID, API_HASH, SESSION, SCAN_INTERVAL, DEFAULT_DM_COOLDOWN, OWNER_ID
 from .database import db, get_setting, set_setting, setup_database
@@ -16,6 +19,9 @@ CAMPAIGN_DECISION = None
 CAMPAIGN_STOP_REQUESTED = False
 CAMPAIGN_NEXT_ROUND = False
 CAMPAIGN_AWAITING_CONFIRMATION = False
+JOIN_QUEUE = asyncio.Queue()
+JOIN_TASK = None
+JOIN_GAP_SECONDS = 300
 
 
 async def run_campaign(chat_id, delay, message, eligible):
@@ -330,6 +336,109 @@ async def owner_commands(event):
 
 
 
+
+
+TELEGRAM_LINK_RE = re.compile(
+    r"(?i)(?:https?://)?(?:www\\.)?(?:t\\.me|telegram\\.me)/"
+    r"(?:\\+([A-Za-z0-9_-]{8,})|joinchat/([A-Za-z0-9_-]{8,})|"
+    r"([A-Za-z0-9_]{4,})(?:/\\d+)?)"
+)
+
+
+def extract_group_links(message):
+    found = []
+    seen = set()
+    for match in TELEGRAM_LINK_RE.finditer(message or ""):
+        invite_hash = match.group(1) or match.group(2)
+        username = match.group(3)
+        key = ("invite", invite_hash) if invite_hash else ("public", username.lower())
+        if key not in seen:
+            seen.add(key)
+            found.append((key[0], key[1]))
+    return found
+
+
+async def join_one_group(link):
+    kind, value = link
+    if kind == "invite":
+        preview = await client(CheckChatInviteRequest(value))
+        chat = getattr(preview, "chat", None)
+        is_group = (
+            getattr(preview, "megagroup", False)
+            or (chat is not None and (
+                getattr(chat, "megagroup", False)
+                or chat.__class__.__name__ == "Chat"
+            ))
+        )
+        if getattr(preview, "broadcast", False) or not is_group:
+            return "Skipped: this invite does not identify a group."
+        result = await client(ImportChatInviteRequest(value))
+        chats = getattr(result, "chats", []) or []
+        title = getattr(chats[0], "title", "private group") if chats else "private group"
+        return f"Joined: {title}"
+
+    entity = await client.get_entity(value)
+    if not (
+        getattr(entity, "megagroup", False)
+        or entity.__class__.__name__ == "Chat"
+    ):
+        return f"Skipped: @{value} is not a group."
+    await client(JoinChannelRequest(entity))
+    return f"Joined: {getattr(entity, 'title', value)}"
+
+
+async def join_queue_worker():
+    global JOIN_TASK
+    try:
+        while True:
+            link = await JOIN_QUEUE.get()
+            try:
+                try:
+                    result = await join_one_group(link)
+                except FloodWaitError as exc:
+                    # Honour Telegram's server-provided cooldown; never bypass it.
+                    await client.send_message(OWNER_ID, f"Join paused by Telegram for {exc.seconds}s.")
+                    await asyncio.sleep(exc.seconds)
+                    try:
+                        result = await join_one_group(link)
+                    except Exception as retry_exc:
+                        result = f"Failed: {type(retry_exc).__name__}: {retry_exc}"
+                except Exception as exc:
+                    result = f"Failed: {type(exc).__name__}: {exc}"
+                await client.send_message(OWNER_ID, f"Auto-join: {result}")
+            finally:
+                JOIN_QUEUE.task_done()
+
+            if not JOIN_QUEUE.empty():
+                await asyncio.sleep(JOIN_GAP_SECONDS)
+    finally:
+        JOIN_TASK = None
+
+
+@client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
+async def owner_group_link_joiner(event):
+    global JOIN_TASK
+    if event.sender_id != OWNER_ID:
+        return
+    links = extract_group_links(event.raw_text or "")
+    if not links:
+        return
+
+    added = 0
+    for link in links:
+        await JOIN_QUEUE.put(link)
+        added += 1
+
+    if not JOIN_TASK or JOIN_TASK.done():
+        JOIN_TASK = asyncio.create_task(join_queue_worker())
+
+    if added == 1 and JOIN_QUEUE.qsize() == 1:
+        await event.respond("Group link detected. Joining now.")
+    else:
+        await event.respond(
+            f"Detected {added} group link(s). Added to the join queue; "
+            "the first will be processed now and later groups will be spaced 5 minutes apart."
+        )
 
 
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
